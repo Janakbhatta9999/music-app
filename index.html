@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -80,4 +81,86 @@
 
   <script src="script.js"></script>
 </body>
+=======
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>song player</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>Amazing song collectiona</h1>
+    <p>Search any song online, add it to your queue, and the queue plays from the oldest release to the newest.</p>
+  </header>
+
+  <main class="layout">
+    <!-- NOW PLAYING -->
+    <section class="player" aria-label="Player">
+      <div class="record" id="record" aria-hidden="true"><span id="recordYear">----</span></div>
+
+      <div id="ytWrap" class="ytWrap" hidden>
+        <div id="ytBox"></div>
+      </div>
+
+      <div class="info">
+        <h2 id="songTitle">Nothing playing</h2>
+        <p id="songArtist">Search a song to begin</p>
+      </div>
+
+      <div class="seek">
+        <span id="timeNow">0:00</span>
+        <input type="range" id="progress" min="0" max="100" value="0" step="0.1" aria-label="Seek" />
+        <span id="timeTotal">0:00</span>
+      </div>
+
+      <div class="controls">
+        <button id="prevBtn" aria-label="Previous song">Prev</button>
+        <button id="playBtn" class="primary" aria-label="Play or pause">Play</button>
+        <button id="nextBtn" aria-label="Next song">Next</button>
+        <button id="repeatBtn" aria-pressed="false" aria-label="Repeat all">Repeat</button>
+      </div>
+
+      <label class="volume">Volume
+        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" />
+      </label>
+
+      <p id="status" class="status" role="status"></p>
+      <audio id="audio" preload="metadata"></audio>
+    </section>
+
+    <!-- SEARCH + QUEUE -->
+    <section class="library" aria-label="Search and queue">
+      <form id="searchForm" class="search" role="search">
+        <select id="source" aria-label="Music source">
+          <option value="audius">Full songs (Audius)</option>
+          <option value="youtube">Famous songs (YouTube)</option>
+          <option value="itunes">30s previews (iTunes)</option>
+        </select>
+        <input id="q" type="search" placeholder="Search song or artist" autocomplete="off" required />
+        <button type="submit" class="primary">Search</button>
+      </form>
+
+      <p id="searchMsg" class="status" role="status"></p>
+      <ul id="results" class="list results"></ul>
+
+      <div class="recHead">
+        <h3>Recommended, play anything</h3>
+        <button id="surpriseBtn" class="primary">Surprise me</button>
+      </div>
+      <div id="genres" class="genres"></div>
+      <p id="recMsg" class="status" role="status"></p>
+      <ul id="recs" class="list results"></ul>
+
+      <h3 class="listHead">Queue, old to new <small id="count">(0 songs)</small></h3>
+      <ol id="list" class="list"></ol>
+      <p id="empty" class="empty">Your queue is empty. Search above and press Add.</p>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+>>>>>>> 3e5af50af83c43dff38e5e192514770de866e996
 </html>
