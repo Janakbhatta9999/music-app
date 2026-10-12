@@ -6,6 +6,12 @@ let orderCounter = 0;    // tie-break for songs with the same date
 let repeatAll = false;
 let lastResults = [];
 let recs = [];
+let shuffle = false;     // random order instead of old -> new
+let endless = true;      // keep finding new songs so playback never stops
+let fetching = false;
+const playedIds = new Set();   // songs already played in this round
+const history = [];            // for the Prev button in shuffle mode
+let goingBack = false;
 
 const $ = (id) => document.getElementById(id);
 const audio = $("audio");
@@ -92,8 +98,8 @@ function ytFailure(err) {
   return "Could not reach YouTube. Check your internet connection.";
 }
 
-async function searchYoutube(term) {
-  const key = getYtKey(true);
+async function searchYoutube(term, ask = true) {
+  const key = getYtKey(ask);
   if (!key) throw Object.assign(new Error("no key"), { noKey: true });
   const url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&videoEmbeddable=true&maxResults=20"
     + "&q=" + encodeURIComponent(term) + "&key=" + encodeURIComponent(key);
@@ -299,7 +305,12 @@ function loadSong(id, autoplay = false) {
   const song = songs.find((s) => s.id === id);
   if (!song) return;
   stopAll();
+  if (autoplay && currentId !== null && currentId !== id && !goingBack) {
+    history.push(currentId);
+    if (history.length > 50) history.shift();
+  }
   currentId = id;
+  if (autoplay) markPlayed(id);
 
   if (kindOf(song) === "yt") {
     audio.removeAttribute("src");
@@ -327,6 +338,7 @@ function playSong(id) {
 }
 
 function resume() {
+  if (currentId !== null) markPlayed(currentId);
   if (backend() === "yt") { if (yt.ready) yt.player.playVideo(); else setStatus("YouTube player is loading..."); }
   else audio.play().catch(() => setStatus("Could not play this song."));
 }
@@ -347,20 +359,109 @@ function togglePlay() {
   if (isPlaying()) pause(); else resume();
 }
 
-function next() {
-  if (!songs.length) return;
+function markPlayed(id) {
+  playedIds.add(id);
+  ensureStock();
+}
+
+const unplayedSongs = () => songs.filter((x) => !playedIds.has(x.id) && x.id !== currentId);
+
+// Decide which song comes next: random in shuffle mode, otherwise the next newer one.
+function pickNext() {
+  const unplayed = unplayedSongs();
+  if (!unplayed.length) return null;
+  if (shuffle) return unplayed[Math.floor(Math.random() * unplayed.length)].id;
   const i = currentIndex();
-  if (i < songs.length - 1) playSong(songs[i + 1].id);
-  else if (repeatAll) playSong(songs[0].id);
-  else pause();
+  const after = unplayed.find((x) => songs.indexOf(x) > i);
+  return (after || unplayed[0]).id;
+}
+
+async function next() {
+  if (!songs.length) return;
+  let id = pickNext();
+  if (!id && endless) { await fetchMore(); id = pickNext(); }
+  if (!id && repeatAll) { playedIds.clear(); playedIds.add(currentId); id = pickNext(); }
+  if (id) playSong(id);
+  else { pause(); setStatus("End of the queue. Turn on Endless to keep going."); }
 }
 
 function prev() {
   if (!songs.length) return;
   const time = backend() === "yt" && yt.ready ? yt.player.getCurrentTime() : audio.currentTime;
   if (time > 3) { seekTo(0); return; }
+  if (shuffle) {
+    while (history.length) {
+      const id = history.pop();
+      if (songs.some((x) => x.id === id)) { goingBack = true; playSong(id); goingBack = false; return; }
+    }
+    return;
+  }
   const i = currentIndex();
   if (i > 0) playSong(songs[i - 1].id);
+}
+
+/* ---------- Endless mode: always find more songs ---------- */
+function ensureStock() {
+  if (!endless || fetching) return;
+  if (unplayedSongs().length <= 2) fetchMore();
+}
+
+function addMany(tracks) {
+  let n = 0;
+  tracks.forEach((t) => {
+    if (!inQueue(t.id)) { songs.push({ ...t, order: orderCounter++ }); n++; }
+  });
+  if (!n) return 0;
+  sortSongs();
+  if (songs.length > 80) {   // keep the queue small: drop old played songs
+    let excess = songs.length - 60;
+    songs = songs.filter((x) => {
+      if (excess > 0 && playedIds.has(x.id) && x.id !== currentId) { excess--; return false; }
+      return true;
+    });
+  }
+  save();
+  renderQueue();
+  refreshLists();
+  if (currentId === null) loadSong(songs[0].id);
+  return n;
+}
+
+async function findMoreTracks() {
+  const cur = currentSong();
+  const wantYt = $("source").value === "youtube" || (cur && kindOf(cur) === "yt");
+  if (wantYt && getYtKey(false)) {
+    try {
+      if (cur) {   // more songs like the current artist
+        const r = (await searchYoutube(cur.artist + " songs", false)).filter((t) => !inQueue(t.id));
+        if (r.length) return r;
+      }
+      const trending = await trendingYoutube();
+      const r = (trending || []).filter((t) => !inQueue(t.id));
+      if (r.length) return r;
+    } catch (e) { /* fall back to Audius below */ }
+  }
+  const genres = GENRES.slice(1).sort(() => Math.random() - 0.5).slice(0, 3);
+  for (const g of genres) {
+    try {
+      const r = (await trendingAudius(g)).filter((t) => !inQueue(t.id));
+      if (r.length) return r;
+    } catch (e) { /* try the next genre */ }
+  }
+  return [];
+}
+
+async function fetchMore() {
+  if (fetching) return;
+  fetching = true;
+  try {
+    const found = await findMoreTracks();
+    if (!addMany(found)) setStatus("Could not find new songs right now.");
+  } catch (e) {
+    setStatus("Could not find more songs. Check your internet connection.");
+  } finally {
+    fetching = false;
+  }
 }
 
 function seekTo(seconds) {
@@ -403,9 +504,36 @@ audio.volume = 0.8;
 playBtn.addEventListener("click", togglePlay);
 $("nextBtn").addEventListener("click", next);
 $("prevBtn").addEventListener("click", prev);
+function saveSettings() {
+  try { localStorage.setItem("oldToNewSettings", JSON.stringify({ shuffle, endless, repeatAll })); } catch (e) {}
+}
+function loadSettings() {
+  try {
+    const st = JSON.parse(localStorage.getItem("oldToNewSettings") || "null");
+    if (st) { shuffle = !!st.shuffle; endless = st.endless !== false; repeatAll = !!st.repeatAll; }
+  } catch (e) {}
+  $("shuffleBtn").setAttribute("aria-pressed", shuffle);
+  $("endlessBtn").setAttribute("aria-pressed", endless);
+  $("repeatBtn").setAttribute("aria-pressed", repeatAll);
+}
+
 $("repeatBtn").addEventListener("click", (e) => {
   repeatAll = !repeatAll;
   e.currentTarget.setAttribute("aria-pressed", repeatAll);
+  saveSettings();
+});
+$("shuffleBtn").addEventListener("click", (e) => {
+  shuffle = !shuffle;
+  e.currentTarget.setAttribute("aria-pressed", shuffle);
+  setStatus(shuffle ? "Shuffle on: songs play in random order." : "Shuffle off: songs play from old to new.");
+  saveSettings();
+});
+$("endlessBtn").addEventListener("click", (e) => {
+  endless = !endless;
+  e.currentTarget.setAttribute("aria-pressed", endless);
+  setStatus(endless ? "Endless on: new songs are added automatically." : "Endless off: playback stops at the end of the queue.");
+  saveSettings();
+  if (endless) ensureStock();
 });
 
 /* ---------- Rendering ---------- */
@@ -492,6 +620,7 @@ function setStatus(msg) { $("status").textContent = msg; }
 
 /* ---------- Start ---------- */
 restore();
+loadSettings();
 renderQueue();
 if (songs.length) loadSong(songs[0].id);
 loadRecs("All");
