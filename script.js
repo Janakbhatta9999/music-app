@@ -24,7 +24,9 @@ const APP_NAME = "OldToNew";
 const AUDIUS = "https://api.audius.co/v1";
 const AUDIUS_KEY = "";        // optional Audius API key
 const YT_KEY = "";            // optional: paste your YouTube API key here instead of typing it in the page
-const YT_REGION = "NP";       // region used for YouTube trending (NP = Nepal)
+const YT_REGION = "NP";
+const YT_PROXY = "/.netlify/functions/youtube";   // hosted site: the server adds the key, so nobody is asked for it
+const USE_PROXY = !["localhost", "127.0.0.1", ""].includes(location.hostname);       // region used for YouTube trending (NP = Nepal)
 const GENRES = ["All", "Electronic", "Hip-Hop/Rap", "Pop", "Rock", "Acoustic", "Jazz", "World"];
 
 const auth = () => "app_name=" + APP_NAME + (AUDIUS_KEY ? "&api_key=" + AUDIUS_KEY : "");
@@ -34,6 +36,12 @@ async function getJson(url) {
   if (!res.ok) { const e = new Error("HTTP " + res.status); e.status = res.status; throw e; }
   return res.json();
 }
+
+/* Every song gets a "group" (the search or genre it came from). Next/Endless stay inside that group,
+   so a song from "old nepali songs" is followed by more old Nepali songs. */
+const pageState = {};   // remembers which page of results each group reached, so Endless finds NEW songs
+const tag = (list, group) => list.map((t) => ({ ...t, group }));
+const streamable = (t) => t.is_streamable !== false;
 
 /* Audius: full-length independent music, free */
 function mapAudius(t) {
@@ -46,25 +54,33 @@ function mapAudius(t) {
     src: AUDIUS + "/tracks/" + t.id + "/stream?" + auth(), art,
   };
 }
-async function searchAudius(term) {
-  const d = await getJson(AUDIUS + "/tracks/search?limit=25&query=" + encodeURIComponent(term) + "&" + auth());
-  return d.data.filter((t) => t.is_streamable !== false).map(mapAudius);
+async function searchAudius(term, usePage = false) {
+  const g = "audius:" + term.toLowerCase();
+  const off = usePage ? pageState[g] || 0 : 0;
+  const d = await getJson(AUDIUS + "/tracks/search?limit=25&offset=" + off + "&query=" + encodeURIComponent(term) + "&" + auth());
+  pageState[g] = off + 25;
+  return tag(d.data.filter(streamable).map(mapAudius), g);
 }
-async function trendingAudius(genre) {
-  const g = genre && genre !== "All" ? "&genre=" + encodeURIComponent(genre) : "";
-  const d = await getJson(AUDIUS + "/tracks/trending?limit=20&time=week" + g + "&" + auth());
-  return d.data.filter((t) => t.is_streamable !== false).map(mapAudius);
+async function trendingAudius(genre, usePage = false) {
+  const name = genre && genre !== "All" ? genre : "All";
+  const g = "audius:genre:" + name;
+  const off = usePage ? pageState[g] || 0 : 0;
+  const gp = name !== "All" ? "&genre=" + encodeURIComponent(name) : "";
+  const d = await getJson(AUDIUS + "/tracks/trending?limit=20&time=week&offset=" + off + gp + "&" + auth());
+  pageState[g] = off + 20;
+  return tag(d.data.filter(streamable).map(mapAudius), g);
 }
 
 /* iTunes: 30-second previews */
-async function searchItunes(term) {
-  const d = await getJson("https://itunes.apple.com/search?media=music&entity=song&limit=25&term=" + encodeURIComponent(term));
-  return d.results.filter((r) => r.previewUrl && r.releaseDate).map((r) => ({
+async function searchItunes(term, limit = 25) {
+  const g = "itunes:" + term.toLowerCase();
+  const d = await getJson("https://itunes.apple.com/search?media=music&entity=song&limit=" + limit + "&term=" + encodeURIComponent(term));
+  return tag(d.results.filter((r) => r.previewUrl && r.releaseDate).map((r) => ({
     id: "i" + r.trackId, kind: "audio",
     title: r.trackName, artist: r.artistName,
     date: r.releaseDate.slice(0, 10), year: Number(r.releaseDate.slice(0, 4)),
     src: r.previewUrl, art: (r.artworkUrl100 || "").replace("100x100", "200x200"),
-  }));
+  })), g);
 }
 
 /* YouTube: famous songs, full length (needs a free API key) */
@@ -90,7 +106,14 @@ function getYtKey(askIfMissing) {
   return key;
 }
 
+const ytAvailable = () => USE_PROXY || !!getYtKey(false);
+
 function ytFailure(err) {
+  if (USE_PROXY) {
+    return err.status === 403 || err.status === 429
+      ? "Today's YouTube limit is used up. Audius songs still work. Try YouTube again tomorrow."
+      : "Could not reach YouTube right now. Try again in a moment.";
+  }
   if (err.status === 400 || err.status === 403) {
     localStorage.removeItem("ytKey");
     return "YouTube rejected the key or the daily limit is used up. Search again to enter a new key.";
@@ -98,22 +121,34 @@ function ytFailure(err) {
   return "Could not reach YouTube. Check your internet connection.";
 }
 
-async function searchYoutube(term, ask = true) {
-  const key = getYtKey(ask);
-  if (!key) throw Object.assign(new Error("no key"), { noKey: true });
-  const url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&videoEmbeddable=true&maxResults=20"
-    + "&q=" + encodeURIComponent(term) + "&key=" + encodeURIComponent(key);
+async function searchYoutube(term, ask = true, usePage = false) {
+  const key = USE_PROXY ? "" : getYtKey(ask);
+  if (!USE_PROXY && !key) throw Object.assign(new Error("no key"), { noKey: true });
+  const g = "yt:" + term.toLowerCase();
+  if (usePage && pageState[g] === null) return [];          // no more pages for this search
+  const pageToken = usePage && pageState[g] ? "&pageToken=" + pageState[g] : "";
+  const url = USE_PROXY
+    ? YT_PROXY + "?kind=search&q=" + encodeURIComponent(term) + pageToken
+    : "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&videoEmbeddable=true&maxResults=20"
+      + "&q=" + encodeURIComponent(term) + pageToken + "&key=" + encodeURIComponent(key);
   const d = await getJson(url);
-  return d.items.map((it) => mapYt(it.id.videoId, it.snippet));
+  pageState[g] = d.nextPageToken || null;
+  return tag(d.items.map((it) => mapYt(it.id.videoId, it.snippet)), g);
 }
 
-async function trendingYoutube() {
-  const key = getYtKey(false);
-  if (!key) return null;
-  const url = "https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&videoCategoryId=10&maxResults=20"
-    + "&regionCode=" + YT_REGION + "&key=" + encodeURIComponent(key);
+async function trendingYoutube(usePage = false) {
+  const key = USE_PROXY ? "" : getYtKey(false);
+  if (!USE_PROXY && !key) return null;
+  const g = "yt:trending";
+  if (usePage && pageState[g] === null) return [];
+  const pageToken = usePage && pageState[g] ? "&pageToken=" + pageState[g] : "";
+  const url = USE_PROXY
+    ? YT_PROXY + "?kind=trending&region=" + YT_REGION + pageToken
+    : "https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&videoCategoryId=10&maxResults=20"
+      + "&regionCode=" + YT_REGION + pageToken + "&key=" + encodeURIComponent(key);
   const d = await getJson(url);
-  return d.items.map((it) => mapYt(it.id, it.snippet));
+  pageState[g] = d.nextPageToken || null;
+  return tag(d.items.map((it) => mapYt(it.id, it.snippet)), g);
 }
 
 /* ---------- Search ---------- */
@@ -330,6 +365,7 @@ function loadSong(id, autoplay = false) {
   $("timeNow").textContent = "0:00";
   if (kindOf(song) === "audio") setStatus("");
   renderQueue();
+  loadLyrics(song);
 }
 
 function playSong(id) {
@@ -366,29 +402,31 @@ function markPlayed(id) {
 
 const unplayedSongs = () => songs.filter((x) => !playedIds.has(x.id) && x.id !== currentId);
 
-// Decide which song comes next: random in shuffle mode, otherwise the next newer one.
-function pickNext() {
-  const unplayed = unplayedSongs();
-  if (!unplayed.length) return null;
-  if (shuffle) return unplayed[Math.floor(Math.random() * unplayed.length)].id;
+// Next song: related (same group) first. Random in shuffle mode, otherwise the next newer one.
+function pickNext(relatedOnly) {
+  const cur = currentSong();
+  let pool = unplayedSongs();
+  if (relatedOnly && cur) pool = pool.filter((x) => x.group === cur.group);
+  if (!pool.length) return null;
+  if (shuffle) return pool[Math.floor(Math.random() * pool.length)].id;
   const i = currentIndex();
-  const after = unplayed.find((x) => songs.indexOf(x) > i);
-  return (after || unplayed[0]).id;
+  const after = pool.find((x) => songs.indexOf(x) > i);
+  return (after || pool[0]).id;
 }
 
 async function next() {
   if (!songs.length) return;
-  let id = pickNext();
-  if (!id && endless) { await fetchMore(); id = pickNext(); }
-  if (!id && repeatAll) { playedIds.clear(); playedIds.add(currentId); id = pickNext(); }
+  let id = pickNext(true);                                   // 1. related song already in the queue
+  if (!id && endless) { await fetchMore(); id = pickNext(true); }   // 2. find more related songs
+  if (!id) id = pickNext(false);                             // 3. anything left in the queue
+  if (!id && repeatAll) { playedIds.clear(); playedIds.add(currentId); id = pickNext(false); }
   if (id) playSong(id);
   else { pause(); setStatus("End of the queue. Turn on Endless to keep going."); }
 }
 
 function prev() {
   if (!songs.length) return;
-  const time = backend() === "yt" && yt.ready ? yt.player.getCurrentTime() : audio.currentTime;
-  if (time > 3) { seekTo(0); return; }
+  if (nowTime() > 3) { seekTo(0); return; }
   if (shuffle) {
     while (history.length) {
       const id = history.pop();
@@ -400,10 +438,16 @@ function prev() {
   if (i > 0) playSong(songs[i - 1].id);
 }
 
-/* ---------- Endless mode: always find more songs ---------- */
+const nowTime = () => (backend() === "yt" && yt.ready ? yt.player.getCurrentTime() || 0 : audio.currentTime);
+
+/* ---------- Endless mode: keep finding related songs ---------- */
+let fetchPromise = null;
+
 function ensureStock() {
-  if (!endless || fetching) return;
-  if (unplayedSongs().length <= 2) fetchMore();
+  const cur = currentSong();
+  if (!endless || fetchPromise || !cur) return;
+  const related = unplayedSongs().filter((x) => x.group === cur.group);
+  if (related.length <= 2) fetchMore(cur.group);
 }
 
 function addMany(tracks) {
@@ -427,41 +471,52 @@ function addMany(tracks) {
   return n;
 }
 
-async function findMoreTracks() {
+// More songs of the same kind: the next page of the same search or genre, then the same artist.
+async function findMoreTracks(group) {
   const cur = currentSong();
-  const wantYt = $("source").value === "youtube" || (cur && kindOf(cur) === "yt");
-  if (wantYt && getYtKey(false)) {
-    try {
-      if (cur) {   // more songs like the current artist
-        const r = (await searchYoutube(cur.artist + " songs", false)).filter((t) => !inQueue(t.id));
-        if (r.length) return r;
-      }
-      const trending = await trendingYoutube();
-      const r = (trending || []).filter((t) => !inQueue(t.id));
-      if (r.length) return r;
-    } catch (e) { /* fall back to Audius below */ }
+  const sep = (group || "").indexOf(":");
+  const src = sep > 0 ? group.slice(0, sep) : "";
+  const rest = sep > 0 ? group.slice(sep + 1) : "";
+  const attempts = [];
+
+  if (src === "yt" && ytAvailable()) {
+    if (rest === "trending") attempts.push(() => trendingYoutube(true));
+    else attempts.push(() => searchYoutube(rest, false, true));
+    if (cur) {
+      attempts.push(() => searchYoutube(cur.artist + " " + (rest === "trending" ? "songs" : rest), false));
+      attempts.push(() => searchYoutube(cur.artist + " songs", false));
+    }
+  } else if (src === "audius") {
+    if (rest.startsWith("genre:")) attempts.push(() => trendingAudius(rest.slice(6), true));
+    else attempts.push(() => searchAudius(rest, true));
+  } else if (src === "itunes") {
+    attempts.push(() => searchItunes(rest, 100));
+  } else if (cur && kindOf(cur) === "yt" && ytAvailable()) {   // songs saved by an older version
+    attempts.push(() => searchYoutube(cur.artist + " songs", false));
+  } else {
+    attempts.push(() => trendingAudius(GENRES[1 + Math.floor(Math.random() * (GENRES.length - 1))]));
   }
-  const genres = GENRES.slice(1).sort(() => Math.random() - 0.5).slice(0, 3);
-  for (const g of genres) {
+
+  for (const run of attempts) {
     try {
-      const r = (await trendingAudius(g)).filter((t) => !inQueue(t.id));
-      if (r.length) return r;
-    } catch (e) { /* try the next genre */ }
+      const list = ((await run()) || []).filter((t) => !inQueue(t.id));
+      if (list.length) return list.map((t) => ({ ...t, group: group || t.group }));
+    } catch (e) { /* try the next idea */ }
   }
   return [];
 }
 
-async function fetchMore() {
-  if (fetching) return;
-  fetching = true;
-  try {
-    const found = await findMoreTracks();
-    if (!addMany(found)) setStatus("Could not find new songs right now.");
-  } catch (e) {
-    setStatus("Could not find more songs. Check your internet connection.");
-  } finally {
-    fetching = false;
-  }
+function fetchMore(group = (currentSong() || {}).group) {
+  if (fetchPromise) return fetchPromise;
+  fetchPromise = (async () => {
+    try {
+      const found = await findMoreTracks(group);
+      if (!addMany(found)) setStatus("Could not find new related songs right now.");
+    } catch (e) {
+      setStatus("Could not find more songs. Check your internet connection.");
+    }
+  })().finally(() => { fetchPromise = null; });
+  return fetchPromise;
 }
 
 function seekTo(seconds) {
@@ -484,6 +539,140 @@ audio.addEventListener("timeupdate", () => {
   $("timeNow").textContent = fmt(audio.currentTime);
   if (audio.duration) $("progress").value = (audio.currentTime / audio.duration) * 100;
 });
+
+/* ---------- Floating lyrics (loaded from LRCLIB, a free lyrics database) ---------- */
+const lyricsCache = new Map();
+let lyricsOpen = false, lyricLines = [], lyricSynced = false, lyricOffset = 0, activeLine = -1, lyricsFor = null;
+
+function cleanTitle(t) {
+  return (t || "")
+    .replace(/\(.*?\)|\[.*?\]/g, " ")
+    .replace(/official|lyrical|lyrics?|video|audio|full song|music|\bhd\b|\b4k\b/gi, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+function guessNames(song) {
+  let title = song.title, artist = song.artist;
+  if (kindOf(song) === "yt") {
+    artist = artist.replace(/\s*-\s*topic$/i, "").replace(/vevo$/i, "");
+    const parts = title.split(/\s[-–|]\s/);
+    if (parts.length >= 2) { artist = parts[0]; title = parts[1]; }
+  }
+  return { title: cleanTitle(title), artist: cleanTitle(artist) };
+}
+
+function parseLrc(text) {
+  const out = [];
+  (text || "").split("\n").forEach((line) => {
+    const m = line.match(/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/);
+    if (m && m[3].trim()) out.push({ t: Number(m[1]) * 60 + Number(m[2]), text: m[3].trim() });
+  });
+  return out;
+}
+
+async function fetchLyrics(song) {
+  if (lyricsCache.has(song.id)) return lyricsCache.get(song.id);
+  const { title, artist } = guessNames(song);
+  const enc = encodeURIComponent;
+  let hit = null;
+  try {
+    const r = await fetch("https://lrclib.net/api/get?track_name=" + enc(title) + "&artist_name=" + enc(artist));
+    if (r.ok) hit = await r.json();
+    if (!hit) {
+      for (const q of [title + " " + artist, title]) {
+        const r2 = await fetch("https://lrclib.net/api/search?q=" + enc(q));
+        if (!r2.ok) continue;
+        const list = await r2.json();
+        hit = list.find((x) => x.syncedLyrics) || list.find((x) => x.plainLyrics) || null;
+        if (hit) break;
+      }
+    }
+  } catch (e) { return { error: true }; }   // errors are not cached, so it can retry later
+  const result = hit ? { synced: parseLrc(hit.syncedLyrics), plain: hit.plainLyrics || "" } : { none: true };
+  lyricsCache.set(song.id, result);
+  return result;
+}
+
+function lyricsMessage(text) {
+  const body = $("lyricsBody");
+  body.innerHTML = "";
+  const p = document.createElement("p");
+  p.textContent = text;
+  body.appendChild(p);
+  lyricLines = []; lyricSynced = false;
+}
+
+async function showLyrics(song) {
+  if (!song) return lyricsMessage("Play a song to see its lyrics.");
+  lyricsFor = song.id;
+  lyricOffset = 0;
+  $("lyOffset").textContent = "0s";
+  lyricsMessage("Loading lyrics...");
+  const res = await fetchLyrics(song);
+  if (lyricsFor !== song.id) return;               // the song changed while loading
+  if (res.error) return lyricsMessage("Could not load lyrics. Check your internet connection.");
+  if (res.none || (!res.synced.length && !res.plain)) return lyricsMessage("Lyrics not found for this song. Many regional songs are not in this free database yet.");
+
+  const body = $("lyricsBody");
+  body.innerHTML = "";
+  body.scrollTop = 0;
+  if (res.synced.length) {
+    lyricLines = res.synced; lyricSynced = true; activeLine = -1;
+    lyricLines.forEach((l) => { const p = document.createElement("p"); p.textContent = l.text; body.appendChild(p); });
+  } else {
+    lyricSynced = false;
+    res.plain.split("\n").forEach((line) => { const p = document.createElement("p"); p.textContent = line || "\u00A0"; p.className = "plain"; body.appendChild(p); });
+  }
+}
+
+function loadLyrics(song) { if (lyricsOpen) showLyrics(song); }
+
+setInterval(() => {   // highlight the line being sung
+  if (!lyricsOpen || !lyricSynced) return;
+  const t = nowTime() + lyricOffset;
+  let idx = -1;
+  for (let i = 0; i < lyricLines.length; i++) { if (lyricLines[i].t <= t) idx = i; else break; }
+  if (idx === activeLine) return;
+  const lines = $("lyricsBody").children;
+  if (lines[activeLine]) lines[activeLine].classList.remove("on");
+  activeLine = idx;
+  if (lines[idx]) {
+    lines[idx].classList.add("on");
+    const body = $("lyricsBody");
+    body.scrollTo({ top: lines[idx].offsetTop - body.clientHeight / 2 + lines[idx].clientHeight / 2, behavior: "smooth" });
+  }
+}, 250);
+
+function setLyricsOpen(open) {
+  lyricsOpen = open;
+  $("lyricsPanel").hidden = !open;
+  $("lyricsBtn").setAttribute("aria-pressed", open);
+  if (open) showLyrics(currentSong());
+}
+$("lyricsBtn").addEventListener("click", () => setLyricsOpen(!lyricsOpen));
+$("lyClose").addEventListener("click", () => setLyricsOpen(false));
+$("lyEarlier").addEventListener("click", () => { lyricOffset -= 0.5; $("lyOffset").textContent = lyricOffset + "s"; });
+$("lyLater").addEventListener("click", () => { lyricOffset += 0.5; $("lyOffset").textContent = lyricOffset + "s"; });
+
+// Drag the lyrics window anywhere on the screen
+(function makeDraggable() {
+  const panel = $("lyricsPanel"), bar = $("lyricsBar");
+  let dx = 0, dy = 0, dragging = false;
+  bar.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    const r = panel.getBoundingClientRect();
+    dx = e.clientX - r.left; dy = e.clientY - r.top; dragging = true;
+    bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const x = Math.min(Math.max(0, e.clientX - dx), window.innerWidth - panel.offsetWidth);
+    const y = Math.min(Math.max(0, e.clientY - dy), window.innerHeight - 60);
+    panel.style.left = x + "px"; panel.style.top = y + "px";
+    panel.style.right = "auto"; panel.style.bottom = "auto";
+  });
+  bar.addEventListener("pointerup", () => { dragging = false; });
+})();
 
 /* ---------- Controls ---------- */
 function fmt(s) {

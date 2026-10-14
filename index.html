@@ -39,6 +39,7 @@
         <button id="repeatBtn" aria-pressed="false" aria-label="Repeat all">Repeat</button>
         <button id="shuffleBtn" aria-pressed="false" aria-label="Shuffle">Shuffle</button>
         <button id="endlessBtn" aria-pressed="true" aria-label="Endless play">Endless</button>
+        <button id="lyricsBtn" aria-pressed="false" aria-label="Floating lyrics">Lyrics</button>
       </div>
 
       <label class="volume">Volume
@@ -77,6 +78,20 @@
       <p id="empty" class="empty">Your queue is empty. Search above and press Add.</p>
     </section>
   </main>
+
+  <!-- Floating lyrics window -->
+  <div id="lyricsPanel" class="lyrics" hidden>
+    <div id="lyricsBar" class="lyricsBar">
+      <span>Lyrics</span>
+      <span class="lyricsTools">
+        <button id="lyEarlier" aria-label="Show lyrics later">-0.5s</button>
+        <span id="lyOffset">0s</span>
+        <button id="lyLater" aria-label="Show lyrics earlier">+0.5s</button>
+        <button id="lyClose" aria-label="Close lyrics">x</button>
+      </span>
+    </div>
+    <div id="lyricsBody" class="lyricsBody"></div>
+  </div>
 
   <script src="script.js"></script>
 </body>

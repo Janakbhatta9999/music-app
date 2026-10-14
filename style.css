@@ -142,3 +142,14 @@ input[type="text"], input[type="number"], input[type="url"], input[type="file"] 
 .ytWrap[hidden] { display: none; }
 .ytWrap iframe { width: 100%; height: 100%; border: 0; display: block; }
 .item .del.yearBtn { padding: 4px 10px; font-size: .8rem; }
+
+/* ---------- Floating lyrics ---------- */
+.lyrics { position: fixed; right: 20px; bottom: 20px; width: min(340px, calc(100vw - 24px)); display: flex; flex-direction: column; background: rgba(29, 33, 66, .94); backdrop-filter: blur(10px); border: 1px solid var(--accent); border-radius: var(--radius); box-shadow: 0 12px 40px rgba(0, 0, 0, .5); z-index: 50; }
+.lyrics[hidden] { display: none; }
+.lyricsBar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; cursor: grab; touch-action: none; user-select: none; border-bottom: 1px solid var(--line); font-weight: 700; color: var(--accent); }
+.lyricsTools { display: flex; gap: 6px; align-items: center; font-weight: 400; font-size: .8rem; color: var(--muted); }
+.lyricsTools button { padding: 2px 8px; font-size: .8rem; }
+.lyricsBody { position: relative; overflow-y: auto; height: 260px; padding: 14px; text-align: center; }
+.lyricsBody p { margin: 0 0 10px; color: var(--muted); transition: color .2s; }
+.lyricsBody p.on { color: var(--text); font-size: 1.15rem; font-weight: 700; }
+.lyricsBody p.plain { color: var(--text); margin-bottom: 4px; }
